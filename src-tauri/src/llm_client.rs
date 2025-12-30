@@ -94,6 +94,14 @@ fn map_network_error(e: reqwest::Error, base_url: &str) -> String {
     }
 }
 
+/// Helper function to validate base URL
+fn validate_base_url(base_url: &str) -> Result<(), String> {
+    if base_url.is_empty() {
+        return Err("Base URL is empty. Please configure the provider's base URL.".to_string());
+    }
+    Ok(())
+}
+
 /// Helper function to handle HTTP status code errors with specific messages
 fn handle_http_status_error(
     status: reqwest::StatusCode,
@@ -125,11 +133,7 @@ pub async fn send_chat_completion(
     prompt: String,
 ) -> Result<Option<String>, String> {
     let base_url = provider.base_url.trim_end_matches('/');
-
-    // Validate base URL
-    if base_url.is_empty() {
-        return Err("Base URL is empty. Please configure the provider's base URL.".to_string());
-    }
+    validate_base_url(base_url)?;
 
     let url = format!("{}/chat/completions", base_url);
 
@@ -179,11 +183,7 @@ pub async fn fetch_models(
     api_key: String,
 ) -> Result<Vec<String>, String> {
     let base_url = provider.base_url.trim_end_matches('/');
-
-    // Validate base URL
-    if base_url.is_empty() {
-        return Err("Base URL is empty. Please configure the provider's base URL.".to_string());
-    }
+    validate_base_url(base_url)?;
 
     let url = format!("{}/models", base_url);
 
