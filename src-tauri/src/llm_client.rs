@@ -77,6 +77,44 @@ fn create_client(provider: &PostProcessProvider, api_key: &str) -> Result<reqwes
         .map_err(|e| format!("Failed to build HTTP client: {}", e))
 }
 
+/// Helper function to categorize network errors into user-friendly messages
+fn map_network_error(e: reqwest::Error, base_url: &str) -> String {
+    if e.is_timeout() {
+        "Request timed out after 30 seconds. Please check your connection and try again."
+            .to_string()
+    } else if e.is_connect() {
+        format!(
+            "Failed to connect to {}. Please check the base URL and your internet connection.",
+            base_url
+        )
+    } else if e.is_request() {
+        format!("Invalid request: {}", e)
+    } else {
+        format!("Network error: {}", e)
+    }
+}
+
+/// Helper function to handle HTTP status code errors with specific messages
+fn handle_http_status_error(
+    status: reqwest::StatusCode,
+    base_url: &str,
+    error_text: String,
+) -> String {
+    if status == 401 {
+        "Authentication failed. Please check your API key and try again.".to_string()
+    } else if status == 403 {
+        "Access forbidden. Your API key may not have permission to access this resource."
+            .to_string()
+    } else if status == 404 {
+        format!(
+            "API endpoint not found ({}). Please verify the base URL is correct.",
+            base_url
+        )
+    } else {
+        format!("API request failed with status {}: {}", status, error_text)
+    }
+}
+
 /// Send a chat completion request to an OpenAI-compatible API
 /// Returns Ok(Some(content)) on success, Ok(None) if response has no content,
 /// or Err on actual errors (HTTP, parsing, etc.)
@@ -112,46 +150,15 @@ pub async fn send_chat_completion(
         .json(&request_body)
         .send()
         .await
-        .map_err(|e| {
-            // Provide more specific error messages based on error type
-            if e.is_timeout() {
-                format!("Request timed out after 30 seconds. Please check your connection and try again.")
-            } else if e.is_connect() {
-                format!("Failed to connect to {}. Please check the base URL and your internet connection.", base_url)
-            } else if e.is_request() {
-                format!("Invalid request: {}", e)
-            } else {
-                format!("Network error: {}", e)
-            }
-        })?;
+        .map_err(|e| map_network_error(e, base_url))?;
 
     let status = response.status();
     if !status.is_success() {
-        // Provide specific error messages for common auth failures
-        if status == 401 {
-            return Err(
-                "Authentication failed. Please check your API key and try again.".to_string(),
-            );
-        } else if status == 403 {
-            return Err(
-                "Access forbidden. Your API key may not have permission to access this resource."
-                    .to_string(),
-            );
-        } else if status == 404 {
-            return Err(format!(
-                "API endpoint not found ({}). Please verify the base URL is correct.",
-                base_url
-            ));
-        }
-
         let error_text = response
             .text()
             .await
             .unwrap_or_else(|_| "Failed to read error response".to_string());
-        return Err(format!(
-            "API request failed with status {}: {}",
-            status, error_text
-        ));
+        return Err(handle_http_status_error(status, base_url, error_text));
     }
 
     let completion: ChatCompletionResponse = response
@@ -184,51 +191,19 @@ pub async fn fetch_models(
 
     let client = create_client(provider, &api_key)?;
 
-    let response = client.get(&url).send().await.map_err(|e| {
-        // Provide more specific error messages based on error type
-        if e.is_timeout() {
-            format!(
-                "Request timed out after 30 seconds. Please check your connection and try again."
-            )
-        } else if e.is_connect() {
-            format!(
-                "Failed to connect to {}. Please check the base URL and your internet connection.",
-                base_url
-            )
-        } else if e.is_request() {
-            format!("Invalid request: {}", e)
-        } else {
-            format!("Network error: {}", e)
-        }
-    })?;
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| map_network_error(e, base_url))?;
 
     let status = response.status();
     if !status.is_success() {
-        // Provide specific error messages for common auth failures
-        if status == 401 {
-            return Err(
-                "Authentication failed. Please check your API key and try again.".to_string(),
-            );
-        } else if status == 403 {
-            return Err(
-                "Access forbidden. Your API key may not have permission to access this resource."
-                    .to_string(),
-            );
-        } else if status == 404 {
-            return Err(format!(
-                "API endpoint not found ({}). Please verify the base URL is correct.",
-                base_url
-            ));
-        }
-
         let error_text = response
             .text()
             .await
             .unwrap_or_else(|_| "Unknown error".to_string());
-        return Err(format!(
-            "Model list request failed ({}): {}",
-            status, error_text
-        ));
+        return Err(handle_http_status_error(status, base_url, error_text));
     }
 
     let parsed: serde_json::Value = response
