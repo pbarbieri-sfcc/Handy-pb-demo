@@ -72,8 +72,55 @@ fn create_client(provider: &PostProcessProvider, api_key: &str) -> Result<reqwes
     let headers = build_headers(provider, api_key)?;
     reqwest::Client::builder()
         .default_headers(headers)
+        .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("Failed to build HTTP client: {}", e))
+}
+
+/// Helper function to categorize network errors into user-friendly messages
+fn map_network_error(e: reqwest::Error, base_url: &str) -> String {
+    if e.is_timeout() {
+        "Request timed out after 30 seconds. Please check your connection and try again."
+            .to_string()
+    } else if e.is_connect() {
+        format!(
+            "Failed to connect to {}. Please check the base URL and your internet connection.",
+            base_url
+        )
+    } else if e.is_request() {
+        format!("Invalid request: {}", e)
+    } else {
+        format!("Network error: {}", e)
+    }
+}
+
+/// Helper function to validate base URL
+fn validate_base_url(base_url: &str) -> Result<(), String> {
+    if base_url.is_empty() {
+        return Err("Base URL is empty. Please configure the provider's base URL.".to_string());
+    }
+    Ok(())
+}
+
+/// Helper function to handle HTTP status code errors with specific messages
+fn handle_http_status_error(
+    status: reqwest::StatusCode,
+    base_url: &str,
+    error_text: String,
+) -> String {
+    if status == 401 {
+        "Authentication failed. Please check your API key and try again.".to_string()
+    } else if status == 403 {
+        "Access forbidden. Your API key may not have permission to access this resource."
+            .to_string()
+    } else if status == 404 {
+        format!(
+            "API endpoint not found ({}). Please verify the base URL is correct.",
+            base_url
+        )
+    } else {
+        format!("API request failed with status {}: {}", status, error_text)
+    }
 }
 
 /// Send a chat completion request to an OpenAI-compatible API
@@ -86,6 +133,8 @@ pub async fn send_chat_completion(
     prompt: String,
 ) -> Result<Option<String>, String> {
     let base_url = provider.base_url.trim_end_matches('/');
+    validate_base_url(base_url)?;
+
     let url = format!("{}/chat/completions", base_url);
 
     debug!("Sending chat completion request to: {}", url);
@@ -105,7 +154,7 @@ pub async fn send_chat_completion(
         .json(&request_body)
         .send()
         .await
-        .map_err(|e| format!("HTTP request failed: {}", e))?;
+        .map_err(|e| map_network_error(e, base_url))?;
 
     let status = response.status();
     if !status.is_success() {
@@ -113,10 +162,7 @@ pub async fn send_chat_completion(
             .text()
             .await
             .unwrap_or_else(|_| "Failed to read error response".to_string());
-        return Err(format!(
-            "API request failed with status {}: {}",
-            status, error_text
-        ));
+        return Err(handle_http_status_error(status, base_url, error_text));
     }
 
     let completion: ChatCompletionResponse = response
@@ -137,6 +183,8 @@ pub async fn fetch_models(
     api_key: String,
 ) -> Result<Vec<String>, String> {
     let base_url = provider.base_url.trim_end_matches('/');
+    validate_base_url(base_url)?;
+
     let url = format!("{}/models", base_url);
 
     debug!("Fetching models from: {}", url);
@@ -147,7 +195,7 @@ pub async fn fetch_models(
         .get(&url)
         .send()
         .await
-        .map_err(|e| format!("Failed to fetch models: {}", e))?;
+        .map_err(|e| map_network_error(e, base_url))?;
 
     let status = response.status();
     if !status.is_success() {
@@ -155,10 +203,7 @@ pub async fn fetch_models(
             .text()
             .await
             .unwrap_or_else(|_| "Unknown error".to_string());
-        return Err(format!(
-            "Model list request failed ({}): {}",
-            status, error_text
-        ));
+        return Err(handle_http_status_error(status, base_url, error_text));
     }
 
     let parsed: serde_json::Value = response
@@ -185,6 +230,11 @@ pub async fn fetch_models(
                 models.push(model.to_string());
             }
         }
+    }
+
+    // Return error if no models were found
+    if models.is_empty() {
+        return Err("No models found in the response. The API may not be compatible or may require additional configuration.".to_string());
     }
 
     Ok(models)
