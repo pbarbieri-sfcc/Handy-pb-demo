@@ -232,7 +232,7 @@ pub async fn fetch_models(
         }
     }
 
-    // Warn if no models were found
+    // Return error if no models were found
     if models.is_empty() {
         return Err("No models found in the response. The API may not be compatible or may require additional configuration.".to_string());
     }
