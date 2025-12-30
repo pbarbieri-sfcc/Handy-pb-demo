@@ -72,6 +72,7 @@ fn create_client(provider: &PostProcessProvider, api_key: &str) -> Result<reqwes
     let headers = build_headers(provider, api_key)?;
     reqwest::Client::builder()
         .default_headers(headers)
+        .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("Failed to build HTTP client: {}", e))
 }
@@ -86,6 +87,12 @@ pub async fn send_chat_completion(
     prompt: String,
 ) -> Result<Option<String>, String> {
     let base_url = provider.base_url.trim_end_matches('/');
+
+    // Validate base URL
+    if base_url.is_empty() {
+        return Err("Base URL is empty. Please configure the provider's base URL.".to_string());
+    }
+
     let url = format!("{}/chat/completions", base_url);
 
     debug!("Sending chat completion request to: {}", url);
@@ -105,10 +112,38 @@ pub async fn send_chat_completion(
         .json(&request_body)
         .send()
         .await
-        .map_err(|e| format!("HTTP request failed: {}", e))?;
+        .map_err(|e| {
+            // Provide more specific error messages based on error type
+            if e.is_timeout() {
+                format!("Request timed out after 30 seconds. Please check your connection and try again.")
+            } else if e.is_connect() {
+                format!("Failed to connect to {}. Please check the base URL and your internet connection.", base_url)
+            } else if e.is_request() {
+                format!("Invalid request: {}", e)
+            } else {
+                format!("Network error: {}", e)
+            }
+        })?;
 
     let status = response.status();
     if !status.is_success() {
+        // Provide specific error messages for common auth failures
+        if status == 401 {
+            return Err(
+                "Authentication failed. Please check your API key and try again.".to_string(),
+            );
+        } else if status == 403 {
+            return Err(
+                "Access forbidden. Your API key may not have permission to access this resource."
+                    .to_string(),
+            );
+        } else if status == 404 {
+            return Err(format!(
+                "API endpoint not found ({}). Please verify the base URL is correct.",
+                base_url
+            ));
+        }
+
         let error_text = response
             .text()
             .await
@@ -137,20 +172,55 @@ pub async fn fetch_models(
     api_key: String,
 ) -> Result<Vec<String>, String> {
     let base_url = provider.base_url.trim_end_matches('/');
+
+    // Validate base URL
+    if base_url.is_empty() {
+        return Err("Base URL is empty. Please configure the provider's base URL.".to_string());
+    }
+
     let url = format!("{}/models", base_url);
 
     debug!("Fetching models from: {}", url);
 
     let client = create_client(provider, &api_key)?;
 
-    let response = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to fetch models: {}", e))?;
+    let response = client.get(&url).send().await.map_err(|e| {
+        // Provide more specific error messages based on error type
+        if e.is_timeout() {
+            format!(
+                "Request timed out after 30 seconds. Please check your connection and try again."
+            )
+        } else if e.is_connect() {
+            format!(
+                "Failed to connect to {}. Please check the base URL and your internet connection.",
+                base_url
+            )
+        } else if e.is_request() {
+            format!("Invalid request: {}", e)
+        } else {
+            format!("Network error: {}", e)
+        }
+    })?;
 
     let status = response.status();
     if !status.is_success() {
+        // Provide specific error messages for common auth failures
+        if status == 401 {
+            return Err(
+                "Authentication failed. Please check your API key and try again.".to_string(),
+            );
+        } else if status == 403 {
+            return Err(
+                "Access forbidden. Your API key may not have permission to access this resource."
+                    .to_string(),
+            );
+        } else if status == 404 {
+            return Err(format!(
+                "API endpoint not found ({}). Please verify the base URL is correct.",
+                base_url
+            ));
+        }
+
         let error_text = response
             .text()
             .await
@@ -185,6 +255,11 @@ pub async fn fetch_models(
                 models.push(model.to_string());
             }
         }
+    }
+
+    // Warn if no models were found
+    if models.is_empty() {
+        return Err("No models found in the response. The API may not be compatible or may require additional configuration.".to_string());
     }
 
     Ok(models)
